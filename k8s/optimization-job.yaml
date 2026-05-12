@@ -2,25 +2,26 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: media-optimizer-job
-  labels:
-    app: media-optimizer
 spec:
-  # How many retries if the job fails
-  backoffLimit: 2 
+  backoffLimit: 0 # Stop retrying immediately so we can see the real error
   template:
     spec:
       containers:
       - name: media-optimizer-container
         image: media-optimizer:latest
-        # This tells K8s to use your local Docker image
-        imagePullPolicy: Never 
+        imagePullPolicy: Never
+        env:
+          - name: MONGO_URI
+            # Use your actual MongoDB Atlas connection string here
+            value: "mongodb+srv://ahadn1891_db_user:ana1TQkn2vV62n7D@mediaoptimization.o2jnxwd.mongodb.net/?appName=mediaoptimization"
+          - name: PROJECT_ROOT
+            value: "/sample-assets"
         volumeMounts:
         - name: asset-volume
           mountPath: /sample-assets
       volumes:
       - name: asset-volume
         hostPath:
-          # THIS IS THE FIX: We use the bridge path now!
           path: /sample-assets
           type: Directory
       restartPolicy: Never
