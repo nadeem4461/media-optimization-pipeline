@@ -1,38 +1,53 @@
-name: Media Optimization Pipeline
+name: K8s Media Optimization Pipeline
 
-# 1. THE TRIGGER: Only run when a PR is opened AND it contains images
 on:
   pull_request:
     paths:
       - '**.jpg'
       - '**.jpeg'
       - '**.png'
+      - '**.webp'
 
 jobs:
   optimize-assets:
-    # THIS IS THE MAGIC WORD TO USE YOUR LAPTOP
-    runs-on: self-hosted 
-    
+    runs-on: self-hosted
+
     steps:
-      # Step 1: Download the code from the Pull Request
       - name: Checkout Repository
         uses: actions/checkout@v3
 
-      # (We skipped the Azure K8s login step because your local runner already has access to Minikube!)
-
-      # Step 2: Press the "Start" Button Automatically
       - name: Deploy Kubernetes Job
         run: |
-          echo "🚀 Triggering Media Optimization Job in Kubernetes..."
+          # Delete the old job if it's stuck from a previous run
+          kubectl delete job media-optimizer-job --ignore-not-found
+          
+          # Deploy the new job
           kubectl apply -f k8s/optimization-job.yaml
 
-      # Step 3: Wait for the job to finish and print the receipt
       - name: Wait for Job Completion & Print Logs
         run: |
-          kubectl wait --for=condition=complete --timeout=120s job/media-optimizer-job
-          echo "📊 PIPELINE RESULTS:"
-          kubectl logs job/media-optimizer-job
+          echo "⏳ Waiting for job to start..."
+          # Wait up to 30 seconds for the pod to actually exist
+          sleep 10
           
-      # Step 4: Clean up the K8s cluster for the next time
-      - name: Delete Job
-        run: kubectl delete job media-optimizer-job
+          POD_NAME=$(kubectl get pods --selector=job-name=media-optimizer-job --output=jsonpath='{.items[0].metadata.name}')
+          
+          if [ -z "$POD_NAME" ]; then
+            echo "❌ Error: Pod never started."
+            exit 1
+          fi
+          
+          echo "✅ Pod found: $POD_NAME"
+          
+          echo "⏳ Waiting for pod to complete..."
+          kubectl wait --for=condition=complete job/media-optimizer-job --timeout=120s || true
+          
+          echo "📜 Fetching Logs..."
+          kubectl logs $POD_NAME
+          
+          # Check if the job actually succeeded
+          JOB_STATUS=$(kubectl get job media-optimizer-job -o jsonpath='{.status.succeeded}')
+          if [ "$JOB_STATUS" != "1" ]; then
+            echo "❌ Job failed. See logs above."
+            exit 1
+          fi
