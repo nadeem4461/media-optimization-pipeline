@@ -13,7 +13,7 @@ spec:
         env:
           - name: MONGO_URI
             # Use your actual MongoDB Atlas connection string here
-            value: "mongodb+srv://<user>:<password>@cluster...mongodb.net/test"
+            value: "mongodb+srv://ahadn1891_db_user:ana1TQkn2vV62n7D@mediaoptimization.o2jnxwd.mongodb.net/?appName=mediaoptimization"
           - name: PROJECT_ROOT
             value: "/sample-assets"
         volumeMounts:
