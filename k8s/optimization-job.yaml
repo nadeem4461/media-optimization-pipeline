@@ -3,26 +3,25 @@ kind: Job
 metadata:
   name: media-optimizer-job
 spec:
-  backoffLimit: 0 # We want it to fail fast if there's a code error
+  backoffLimit: 0 # Stop retrying immediately so we can see the real error
   template:
     spec:
       containers:
       - name: media-optimizer-container
         image: media-optimizer:latest
-        imagePullPolicy: Never 
+        imagePullPolicy: Never
         env:
-          - name: PR_NUMBER
-            value: "${PR_NUMBER}" # Injected by GitHub Actions
           - name: MONGO_URI
-            value: "mongodb://mongodb-service:27017/media-db"
+            # Use your actual MongoDB Atlas connection string here
+            value: "mongodb+srv://<user>:<password>@cluster...mongodb.net/test"
+          - name: PROJECT_ROOT
+            value: "/sample-assets"
         volumeMounts:
-        - name: project-root
-          # MUST be /app to match your optimize.js script
-          mountPath: /app 
+        - name: asset-volume
+          mountPath: /sample-assets
       volumes:
-      - name: project-root
+      - name: asset-volume
         hostPath:
-          # Use the absolute path to your repo on your Ubuntu laptop
-          path: /home/nadeem/msrit/media-optimization-pipeline 
+          path: /sample-assets
           type: Directory
       restartPolicy: Never
