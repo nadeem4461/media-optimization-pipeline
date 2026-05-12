@@ -1,0 +1,71 @@
+apiVersion: batch/v1
+kind: Job
+
+metadata:
+  name: media-optimize-job-${PR_NUMBER}
+  namespace: media-opt
+
+  labels:
+    app: media-optimizer
+    pr: "${PR_NUMBER}"
+
+spec:
+
+  backoffLimit: 0
+
+  template:
+
+    metadata:
+      labels:
+        app: media-optimizer
+        pr: "${PR_NUMBER}"
+
+    spec:
+
+      restartPolicy: Never
+
+      containers:
+
+      - name: optimizer
+
+        image: media-optimizer:latest
+
+        imagePullPolicy: Never
+
+        env:
+
+        - name: NODE_ENV
+          value: production
+
+        - name: PR_NUMBER
+          value: "${PR_NUMBER}"
+
+        - name: BRANCH_NAME
+          value: "${BRANCH_NAME}"
+
+        - name: REPO_NAME
+          value: "${REPO_NAME}"
+
+        - name: WORKSPACE_PATH
+          value: "/workspace"
+
+        - name: ASSET_FOLDERS
+          value: "sample-project/assets,public,static,assets"
+
+        - name: MONGO_URI
+          valueFrom:
+            secretKeyRef:
+              name: media-opt-secrets
+              key: mongoUri
+
+        volumeMounts:
+
+        - name: workspace-volume
+          mountPath: /workspace
+
+      volumes:
+
+      - name: workspace-volume
+        hostPath:
+          path: "/workspace"
+          type: Directory
