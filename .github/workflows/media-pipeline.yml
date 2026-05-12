@@ -1,4 +1,4 @@
-name: Media Optimization Pipeline
+name: K8s Media Optimization Pipeline
 
 on:
   pull_request:
@@ -6,47 +6,48 @@ on:
       - '**.jpg'
       - '**.jpeg'
       - '**.png'
+      - '**.webp'
 
 jobs:
   optimize-assets:
-    runs-on: self-hosted 
-    
+    runs-on: self-hosted
+
     steps:
-      # Step 1: Checkout with full history so we can push changes back
       - name: Checkout Repository
         uses: actions/checkout@v3
-        with:
-          fetch-depth: 0 
-          token: ${{ secrets.GH_PAT }} # Use a PAT for write access
 
-      # Step 2: Run the Kubernetes Job
       - name: Deploy Kubernetes Job
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          MONGO_URI: ${{ secrets.MONGO_URI }}
         run: |
-          # Inject PR_NUMBER and MONGO_URI into the YAML
-          envsubst < k8s/optimization-job.yaml | kubectl apply -f -
+          # Delete the old job if it's stuck from a previous run
+          kubectl delete job media-optimizer-job --ignore-not-found
+          
+          # Deploy the new job
+          kubectl apply -f k8s/optimization-job.yaml
 
-      # Step 3: Wait and Audit
-      - name: Wait for Completion & Audit Logs
+      - name: Wait for Job Completion & Print Logs
         run: |
-          kubectl wait --for=condition=complete --timeout=180s job/media-optimizer-job
-          JOB_LOGS=$(kubectl logs job/media-optimizer-job)
-          echo "$JOB_LOGS"
-          if echo "$JOB_LOGS" | grep -q "Failed"; then exit 1; fi
-
-      # Step 4: THE MAGIC - Sync optimized files and code back to the PR
-      - name: Push Changes back to PR
-        if: success()
-        run: |
-          git config --global user.name "media-optimizer-bot"
-          git config --global user.email "bot@devops.ai"
-          git add .
-          # Only commit if there are actually changes
-          git diff --quiet && git diff --staged --quiet || (git commit -m "chore: automated webp conversion & ref updates" && git push origin HEAD:${{ github.head_ref }})
-
-      # Step 5: Cleanup
-      - name: Delete Job
-        if: always()
-        run: kubectl delete job media-optimizer-job --ignore-not-forward
+          echo "⏳ Waiting for job to start..."
+          # Wait up to 30 seconds for the pod to actually exist
+          sleep 10
+          
+          POD_NAME=$(kubectl get pods --selector=job-name=media-optimizer-job --output=jsonpath='{.items[0].metadata.name}')
+          
+          if [ -z "$POD_NAME" ]; then
+            echo "❌ Error: Pod never started."
+            exit 1
+          fi
+          
+          echo "✅ Pod found: $POD_NAME"
+          
+          echo "⏳ Waiting for pod to complete..."
+          kubectl wait --for=condition=complete job/media-optimizer-job --timeout=120s || true
+          
+          echo "📜 Fetching Logs..."
+          kubectl logs $POD_NAME
+          
+          # Check if the job actually succeeded
+          JOB_STATUS=$(kubectl get job media-optimizer-job -o jsonpath='{.status.succeeded}')
+          if [ "$JOB_STATUS" != "1" ]; then
+            echo "❌ Job failed. See logs above."
+            exit 1
+          fi
