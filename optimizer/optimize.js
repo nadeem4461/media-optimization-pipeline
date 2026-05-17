@@ -1,89 +1,206 @@
-const sharp = require('sharp');
-const fs = require('fs');
+require('dotenv').config();
+
 const path = require('path');
+const fs = require('fs');
+const { performance } = require('perf_hooks');
 
-// Root of your project (current directory)
-const projectRoot = path.join(__dirname, '../'); 
-const extensionsToOptimize = ['.jpg', '.jpeg', '.png'];
-const codeExtensions = ['.html', '.css', '.js', '.jsx', '.tsx', '.vue'];
+const connectDB = require('./db');
+const PRLog = require('./models/PRLog');
 
-// Helper: Find all files recursively
-function getAllFiles(dirPath, arrayOfFiles = []) {
-    const files = fs.readdirSync(dirPath);
+const { scanAssets, DEFAULT_ASSET_PATHS } = require('./utils/scanAssets');
+const { processImage } = require('./utils/optimizeImages');
+const replaceReferences = require('./utils/replaceReferences');
+const calculateStats = require('./utils/calculateStats');
 
-    files.forEach(file => {
-        const fullPath = path.join(dirPath, file);
-        // Skip node_modules and .git folders
-        if (file === 'node_modules' || file === '.git' || file === 'actions-runner') return;
+const PROJECT_ROOT = process.env.WORKSPACE_PATH || '/workspace';
 
-        if (fs.statSync(fullPath).isDirectory()) {
-            arrayOfFiles = getAllFiles(fullPath, arrayOfFiles);
-        } else {
-            arrayOfFiles.push(fullPath);
-        }
+const ASSET_FOLDERS = process.env.ASSET_FOLDERS
+  ? process.env.ASSET_FOLDERS
+      .split(',')
+      .map(folder => folder.trim())
+      .filter(Boolean)
+  : DEFAULT_ASSET_PATHS;
+
+const CODE_FILE_EXTENSIONS = [
+  '.html',
+  '.css',
+  '.js',
+  '.jsx',
+  '.tsx',
+  '.vue'
+];
+
+function formatBytes(bytes) {
+  return `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+}
+
+async function main() {
+
+  const start = performance.now();
+
+  await connectDB();
+
+  const prNumber = process.env.PR_NUMBER || 'local';
+  const branch = process.env.BRANCH_NAME || 'local-branch';
+  const repo = process.env.REPO_NAME || 'unknown/repo';
+
+  console.log(
+    `Starting optimizer for ${repo} PR #${prNumber} on branch ${branch}`
+  );
+
+  console.log('Scanning assets...');
+
+  const images = await scanAssets(
+    PROJECT_ROOT,
+    ASSET_FOLDERS
+  );
+
+  console.log(`Found ${images.length} image(s)`);
+
+  if (images.length === 0) {
+
+    console.log('No supported image assets found.');
+
+    await PRLog.create({
+      repoName: repo,
+      prNumber: String(prNumber),
+      branch,
+      totalImagesOptimized: 0,
+      totalOriginalSize: 0,
+      totalOptimizedSize: 0,
+      totalSavedBytes: 0,
+      optimizedFiles: [],
+      status: 'no-images',
+      optimizationTimestamp: new Date()
     });
 
-    return arrayOfFiles;
+    process.exit(0);
+  }
+
+  const optimizedResults = [];
+
+  for (const imagePath of images) {
+
+    const relativePath = path
+      .relative(PROJECT_ROOT, imagePath)
+      .split(path.sep)
+      .join('/');
+
+    console.log(`Optimizing image: ${relativePath}`);
+
+    try {
+
+      const result = await processImage(imagePath, {
+        quality: 80,
+        maxWidth: 1920
+      });
+
+      optimizedResults.push(result);
+
+      const convertedRelative = path
+        .relative(PROJECT_ROOT, result.converted)
+        .split(path.sep)
+        .join('/');
+
+      console.log(
+        `✅ Converted ${relativePath} → ${convertedRelative}`
+      );
+
+      console.log(
+        `   ${formatBytes(result.originalSize)} → ${formatBytes(result.optimizedSize)}`
+      );
+
+      // VERIFY ORIGINAL FILE REMOVED
+      if (!fs.existsSync(imagePath)) {
+        console.log(`🗑 Deleted original: ${relativePath}`);
+      } else {
+        console.log(`⚠ Original still exists: ${relativePath}`);
+      }
+
+    } catch (err) {
+
+      console.error(
+        `❌ Failed optimizing ${relativePath}:`,
+        err.message
+      );
+    }
+  }
+
+  console.log('Updating references...');
+
+  await replaceReferences.runReplace(
+    PROJECT_ROOT,
+    optimizedResults.map(item => ({
+      original: item.original,
+      converted: item.converted
+    })),
+    CODE_FILE_EXTENSIONS
+  );
+
+  console.log('Reference update completed');
+
+  const stats = calculateStats.fromResults(
+    optimizedResults
+  );
+
+  const optimizedFiles = optimizedResults.map(item =>
+    path
+      .relative(PROJECT_ROOT, item.converted)
+      .split(path.sep)
+      .join('/')
+  );
+
+  const record = await PRLog.create({
+    repoName: repo,
+    prNumber: String(prNumber),
+    branch,
+    totalImagesOptimized: optimizedResults.length,
+    totalOriginalSize: stats.originalBytes,
+    totalOptimizedSize: stats.optimizedBytes,
+    totalSavedBytes: stats.savedBytes,
+    optimizedFiles,
+    status: 'completed',
+    optimizationTimestamp: new Date()
+  });
+
+  const durationSeconds = (
+    (performance.now() - start) / 1000
+  ).toFixed(2);
+
+  console.log('\n========== FINAL REPORT ==========');
+
+  console.log(
+    `Images Optimized: ${optimizedResults.length}`
+  );
+
+  console.log(
+    `Original Size: ${formatBytes(stats.originalBytes)}`
+  );
+
+  console.log(
+    `Optimized Size: ${formatBytes(stats.optimizedBytes)}`
+  );
+
+  console.log(
+    `Total Saved: ${formatBytes(stats.savedBytes)}`
+  );
+
+  console.log(
+    `MongoDB Analytics ID: ${record._id}`
+  );
+
+  console.log(
+    `Completed in ${durationSeconds} seconds`
+  );
+
+  console.log('==================================');
+
+  process.exit(0);
 }
 
-async function runGlobalOptimization() {
-    console.log('🚀 Scanning entire project for media assets...\n');
-    
-    const allFiles = getAllFiles(projectRoot);
-    const images = allFiles.filter(file => extensionsToOptimize.includes(path.extname(file).toLowerCase()));
-    const sourceFiles = allFiles.filter(file => codeExtensions.includes(path.extname(file).toLowerCase()));
+main().catch(err => {
 
-    let totalSaved = 0;
+  console.error('Fatal optimizer error:', err);
 
-    // 1. PROCESS AND DELETE IMAGES
-    for (const imagePath of images) {
-        const ext = path.extname(imagePath);
-        const outputPath = imagePath.replace(ext, '.webp');
-
-        try {
-            const originalStats = fs.statSync(imagePath);
-            
-            await sharp(imagePath)
-                .resize({ width: 1920, withoutEnlargement: true })
-                .webp({ quality: 80 })
-                .toFile(outputPath);
-
-            const optimizedStats = fs.statSync(outputPath);
-            totalSaved += (originalStats.size - optimizedStats.size);
-
-            // DELETE the original image
-            fs.unlinkSync(imagePath);
-            
-            console.log(`✅ Optimized & Replaced: ${path.basename(imagePath)} -> .webp`);
-        } catch (err) {
-            console.error(`❌ Error processing ${imagePath}:`, err.message);
-        }
-    }
-
-    // 2. UPDATE CODE REFERENCES
-    console.log('\n📝 Updating image references in source code...');
-    for (const sourceFile of sourceFiles) {
-        let content = fs.readFileSync(sourceFile, 'utf8');
-        let updated = false;
-
-        extensionsToOptimize.forEach(ext => {
-            // Regex to find "filename.png" and change to "filename.webp"
-            const regex = new RegExp(ext.replace('.', '\\.'), 'gi');
-            if (regex.test(content)) {
-                content = content.replace(regex, '.webp');
-                updated = true;
-            }
-        });
-
-        if (updated) {
-            fs.writeFileSync(sourceFile, content);
-            console.log(`   ✨ Updated refs in: ${path.relative(projectRoot, sourceFile)}`);
-        }
-    }
-
-    console.log('\n📊 --- FINAL REPORT ---');
-    console.log(`Total Storage Saved: ${(totalSaved / (1024 * 1024)).toFixed(2)} MB`);
-    console.log('Pipeline complete. All code references updated.\n');
-}
-
-runGlobalOptimization();
+  process.exit(1);
+});
